@@ -1,0 +1,32 @@
+[project]
+name = "audio-transcription-demo"
+version = "0.1.0"
+description = "A small demo application for microphone recording and AI-based audio transcription."
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy>=1.26",
+    "sounddevice>=0.4",
+    "openai-whisper>=20231117",
+    # Whisper needs ffmpeg (system dependency), user must install externally.
+]
+
+# Entry point for command-line execution using:
+#    uv run audio-transcription-demo
+# or uv tool install for global usage.
+[project.scripts]
+audio-transcription-demo = "audio_transcription_demo.main:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+# Optional but recommended:
+# Tells uv where your source code is.
+package-dir = "src"
