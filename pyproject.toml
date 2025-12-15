@@ -1,32 +1,39 @@
+[build-system]
+requires = ["uv_build>=0.9.16,<0.10.0"]
+build-backend = "uv_build"
+
 [project]
 name = "audio-transcription-demo"
 version = "0.1.0"
-description = "A small demo application for microphone recording and AI-based audio transcription."
-authors = [
-    { name = "Your Name", email = "your.email@example.com" }
-]
+description = "Workshop demo: speech-to-text with selectable local backends and modular sources/use-cases."
 readme = "README.md"
-license = { text = "MIT" }
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Your Name", email = "you@example.com" }]
 
 dependencies = [
-    "numpy>=1.26",
-    "sounddevice>=0.4",
-    "openai-whisper>=20231117",
-    # Whisper needs ffmpeg (system dependency), user must install externally.
+  "numpy>=1.23",
+  "sounddevice>=0.4.6",
+  "soundfile>=0.13,<0.14",
+  "vosk>=0.3.45,<0.4.0",
 ]
 
-# Entry point for command-line execution using:
-#    uv run audio-transcription-demo
-# or uv tool install for global usage.
-[project.scripts]
-audio-transcription-demo = "audio_transcription_demo.main:main"
+[project.optional-dependencies]
+whisper = [
+  "openai-whisper>=20231117",
+  "torch>=2.0",
+]
+speechbrain = [
+  "speechbrain>=1.0.0",
+  "torch>=2.0",
+]
+api = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+]
 
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+[project.scripts]
+audio_transcription_demo = "audio_transcription_demo.main:main"
 
 [tool.uv]
-# Optional but recommended:
-# Tells uv where your source code is.
-package-dir = "src"
+package = true

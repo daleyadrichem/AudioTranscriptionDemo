@@ -1,31 +1,63 @@
-"""
-Base classes and interfaces for AI use cases.
-"""
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from audio_transcription_demo.recognizers.base import SpeechRecognizer
+from audio_transcription_demo.sources.base import AudioSource
+
 
 class UseCase(ABC):
-    """Abstract base class for AI use cases.
+    """
+    Abstract interface for demo use cases.
 
-    Subclasses should implement the :meth:`run` method to start any
-    UI or command-line loop.
-
-    Attributes
-    ----------
-    name : str
-        Human-readable name of the use case.
+    A use case is an executable demo scenario (e.g. live transcription,
+    transcribe a file, meeting minutes) that orchestrates:
+    - selecting/recording audio (AudioSource)
+    - transcribing it (SpeechRecognizer)
+    - outputting results
     """
 
-    name: str = "Unnamed Use Case"
+    @property
+    @abstractmethod
+    def key(self) -> str:
+        """
+        Menu key for selecting the use case.
+
+        Returns
+        -------
+        str
+            Key (typically a single character).
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def label(self) -> str:
+        """
+        Human-readable label for menu display.
+
+        Returns
+        -------
+        str
+            Label.
+        """
+        raise NotImplementedError
 
     @abstractmethod
-    def run(self) -> None:
-        """Run the use case.
+    def run(self, *, source: AudioSource, recognizer: SpeechRecognizer) -> None:
+        """
+        Execute the use case.
 
-        This method is typically responsible for starting a UI loop,
-        command-line interaction, or other application flow.
+        Parameters
+        ----------
+        source:
+            The audio source to acquire audio from.
+        recognizer:
+            The recognizer backend used to transcribe audio.
+
+        Raises
+        ------
+        RuntimeError
+            If acquisition, transcription, or output fails.
         """
         raise NotImplementedError
