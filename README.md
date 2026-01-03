@@ -1,5 +1,5 @@
 ````markdown
-# speech-demo
+# audio_transcription_demo
 
 A modular, workshop-friendly speech-to-text (STT) demo application with clean architecture and fully local backends.
 
@@ -47,7 +47,7 @@ project-root/
   README.md
   Dockerfile
   src/
-    speech_demo/
+    audio_transcription_demo/
       main.py          # interactive CLI
       api.py           # FastAPI server
       utils.py
@@ -131,13 +131,13 @@ $env:VOSK_MODEL_PATH = "C:\absolute\path\to\vosk-model-small-en-us-0.15"
 ## Running the interactive CLI
 
 ```bash
-speech-demo
+audio_transcription_demo
 ```
 
 or
 
 ```bash
-python -m speech_demo.main
+python -m audio_transcription_demo.main
 ```
 
 The CLI will guide you through:
@@ -159,7 +159,7 @@ uv sync --extra api
 Run:
 
 ```bash
-uvicorn speech_demo.api:app --host 0.0.0.0 --port 8000
+uvicorn audio_transcription_demo.api:app --host 0.0.0.0 --port 8000
 ```
 
 OpenAPI docs:
@@ -188,7 +188,7 @@ This design is intentional and container-safe.
 From the project root:
 
 ```bash
-docker build -t speech-demo:latest .
+docker build -t audio_transcription_demo:latest .
 ```
 
 ---
@@ -204,7 +204,7 @@ You must:
 docker run --rm -p 8000:8000 \
   -e VOSK_MODEL_PATH=/models/vosk \
   -v /absolute/path/to/vosk-model-small-en-us-0.15:/models/vosk \
-  speech-demo:latest
+  audio_transcription_demo:latest
 ```
 
 The API will be available at:
@@ -225,7 +225,7 @@ If you want Whisper or SpeechBrain inside the container:
 2. Rebuild the image:
 
    ```bash
-   docker build -t speech-demo:latest .
+   docker build -t audio_transcription_demo:latest .
    ```
 
 Notes:

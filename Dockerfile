@@ -17,14 +17,21 @@ COPY src /app/src
 # Install the package + API deps.
 # If you created an `api` extra: use `.[api]`
 RUN pip install --no-cache-dir -U pip \
-    && pip install --no-cache-dir ".[api]"
+    && pip install --no-cache-dir ".[api,whisper]"
+
+# 🔽 PRE-DOWNLOAD WHISPER MODEL
+RUN python - <<EOF
+import whisper
+whisper.load_model("base")
+EOF
 
 # If you want Whisper/SpeechBrain inside the image, you can instead do:
 # RUN pip install --no-cache-dir ".[api,whisper,speechbrain]"
 
 ENV PYTHONUNBUFFERED=1
+ENV WHISPER_MODEL=base
 
 EXPOSE 8000
 
 # Run the FastAPI server
-CMD ["uvicorn", "speech_demo.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "audio_transcription_demo.api:app", "--host", "0.0.0.0", "--port", "8000"]

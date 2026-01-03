@@ -3,9 +3,10 @@ from __future__ import annotations
 import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from .recognizers.base import SpeechRecognizer
@@ -16,44 +17,9 @@ from .utils import AudioProcessingError, BackendNotAvailableError, format_meetin
 RecognizerName = Literal["vosk", "whisper", "speechbrain"]
 
 
-class TranscriptionResponse(BaseModel):
-    """
-    Response model for transcription endpoints.
-
-    Attributes
-    ----------
-    recognizer:
-        Identifier of the recognizer backend used.
-    text:
-        Transcript text.
-    """
-
-    recognizer: RecognizerName
-    text: str
-
-
-class MeetingMinutesResponse(BaseModel):
-    """
-    Response model for meeting-minutes endpoint.
-
-    Attributes
-    ----------
-    recognizer:
-        Identifier of the recognizer backend used.
-    transcript:
-        Transcript text.
-    minutes_markdown:
-        Markdown-formatted meeting minutes.
-    """
-
-    recognizer: RecognizerName
-    transcript: str
-    minutes_markdown: str
-
-
 class HealthResponse(BaseModel):
     """
-    Basic health check response.
+    Response model for health checks.
 
     Attributes
     ----------
@@ -62,6 +28,63 @@ class HealthResponse(BaseModel):
     """
 
     status: str = Field(default="ok")
+
+
+class TranscriptionResponse(BaseModel):
+    """
+    Response model for transcription use case.
+
+    Attributes
+    ----------
+    recognizer:
+        Recognizer backend identifier used for transcription.
+    transcript:
+        Transcript text.
+    """
+
+    recognizer: RecognizerName
+    transcript: str
+
+
+class LiveTranscribeChunkResponse(BaseModel):
+    """
+    Response model for the "live transcribe" API use case.
+
+    Notes
+    -----
+    True streaming is typically done via WebSockets. For simplicity, this API
+    supports a "chunked" live demo: clients repeatedly upload short audio snippets
+    and get back incremental transcripts.
+
+    Attributes
+    ----------
+    recognizer:
+        Recognizer backend identifier used.
+    transcript:
+        Transcript text for this single uploaded chunk.
+    """
+
+    recognizer: RecognizerName
+    transcript: str
+
+
+class MeetingMinutesResponse(BaseModel):
+    """
+    Response model for meeting-minutes use case.
+
+    Attributes
+    ----------
+    recognizer:
+        Recognizer backend identifier used.
+    transcript:
+        Transcript text.
+    minutes_markdown:
+        Markdown-formatted meeting minutes generated from transcript.
+    """
+
+    recognizer: RecognizerName
+    transcript: str
+    minutes_markdown: str
 
 
 def create_app() -> FastAPI:
@@ -75,11 +98,26 @@ def create_app() -> FastAPI:
     """
     app = FastAPI(
         title="speech-demo API",
-        description="HTTP API for modular speech-to-text demo (recognizers + use cases).",
+        description=(
+            "Upload an audio file in Swagger UI and run speech-to-text use cases.\n\n"
+            "Open **/docs** for the interactive Swagger page."
+        ),
         version="0.1.0",
     )
 
-    @app.get("/health", response_model=HealthResponse)
+    @app.get("/", include_in_schema=False)
+    def root() -> RedirectResponse:
+        """
+        Redirect root URL to Swagger UI.
+
+        Returns
+        -------
+        fastapi.responses.RedirectResponse
+            Redirect response to `/docs`.
+        """
+        return RedirectResponse(url="/docs")
+
+    @app.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
         """
         Health check endpoint.
@@ -87,11 +125,11 @@ def create_app() -> FastAPI:
         Returns
         -------
         HealthResponse
-            Simple status response.
+            Basic health response.
         """
         return HealthResponse()
 
-    @app.get("/recognizers")
+    @app.get("/recognizers", tags=["system"])
     def list_recognizers() -> dict[str, list[str]]:
         """
         List supported recognizer backend identifiers.
@@ -99,41 +137,54 @@ def create_app() -> FastAPI:
         Returns
         -------
         dict[str, list[str]]
-            A dictionary containing the list of recognizer names.
+            Dictionary containing available recognizer names.
         """
         return {"recognizers": ["vosk", "whisper", "speechbrain"]}
 
-    @app.post("/transcribe", response_model=TranscriptionResponse)
-    async def transcribe(
-        file: UploadFile = File(...),
-        recognizer: RecognizerName = Query("vosk"),
+    # --- Use-case endpoints (Swagger-friendly) --------------------------------
+
+    @app.post(
+        "/use-cases/transcribe",
+        response_model=TranscriptionResponse,
+        tags=["use-cases"],
+        summary="Use case: Transcribe a single audio file",
+        description=(
+            "Upload an audio file (mp3/wav/m4a/etc.) and get a transcript.\n\n"
+            "In Swagger UI, click **Try it out** and browse for a file."
+        ),
+    )
+    async def use_case_transcribe(
+        file: UploadFile = File(..., description="Audio file to transcribe."),
+        recognizer: RecognizerName = Query(
+            "whisper",
+            description="Recognizer backend to use.",
+        ),
     ) -> TranscriptionResponse:
         """
-        Transcribe an uploaded audio file (mp3/wav/m4a/...).
+        Transcribe one uploaded audio file.
 
         Parameters
         ----------
         file:
-            Uploaded audio file. Any format supported by ffmpeg is acceptable.
+            Uploaded audio file.
         recognizer:
-            Recognizer backend name ("vosk", "whisper", "speechbrain").
+            Recognizer backend identifier.
 
         Returns
         -------
         TranscriptionResponse
-            Transcript text and recognizer used.
+            Transcript and backend used.
 
         Raises
         ------
         HTTPException
-            - 400 if the upload is invalid
-            - 500 for transcription errors or backend initialization failures
+            If upload is invalid or transcription fails.
         """
         tmp_path = await _save_upload_to_temp(file)
         try:
             stt = _get_recognizer_cached(recognizer)
-            text = stt.transcribe_any(tmp_path)
-            return TranscriptionResponse(recognizer=recognizer, text=text)
+            transcript = stt.transcribe_any(tmp_path)
+            return TranscriptionResponse(recognizer=recognizer, transcript=transcript)
         except BackendNotAvailableError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except (FileNotFoundError, AudioProcessingError) as exc:
@@ -143,38 +194,103 @@ def create_app() -> FastAPI:
         finally:
             _safe_unlink(tmp_path)
 
-    @app.post("/meeting-minutes", response_model=MeetingMinutesResponse)
-    async def meeting_minutes(
-        file: UploadFile = File(...),
-        recognizer: RecognizerName = Query("vosk"),
-        max_sentences: int = Query(6, ge=1, le=20),
-    ) -> MeetingMinutesResponse:
+    @app.post(
+        "/use-cases/live-transcribe",
+        response_model=LiveTranscribeChunkResponse,
+        tags=["use-cases"],
+        summary="Use case: Live transcription (chunked uploads)",
+        description=(
+            "This is an API-friendly variant of the CLI live transcription:\n"
+            "upload a short audio chunk and get back a transcript for that chunk.\n\n"
+            "For real streaming, you would typically add WebSockets."
+        ),
+    )
+    async def use_case_live_transcribe_chunk(
+        file: UploadFile = File(..., description="Short audio snippet to transcribe."),
+        recognizer: RecognizerName = Query(
+            "whisper",
+            description="Recognizer backend to use.",
+        ),
+    ) -> LiveTranscribeChunkResponse:
         """
-        Create meeting minutes from an uploaded meeting recording.
-
-        Steps:
-        1) Transcribe audio using the chosen recognizer.
-        2) Produce Markdown minutes using a local heuristic summarizer.
+        Transcribe a short snippet (one chunk) and return its transcript.
 
         Parameters
         ----------
         file:
-            Uploaded audio file.
+            Uploaded audio snippet.
         recognizer:
-            Recognizer backend name ("vosk", "whisper", "speechbrain").
-        max_sentences:
-            Number of key sentences to include in the minutes.
+            Recognizer backend identifier.
 
         Returns
         -------
-        MeetingMinutesResponse
-            Transcript and meeting minutes in Markdown.
+        LiveTranscribeChunkResponse
+            Transcript for the chunk and backend used.
 
         Raises
         ------
         HTTPException
-            - 400 for invalid input or conversion errors
-            - 500 for transcription failures or backend initialization issues
+            If upload is invalid or transcription fails.
+        """
+        tmp_path = await _save_upload_to_temp(file)
+        try:
+            stt = _get_recognizer_cached(recognizer)
+            transcript = stt.transcribe_any(tmp_path)
+            return LiveTranscribeChunkResponse(recognizer=recognizer, transcript=transcript)
+        except BackendNotAvailableError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except (FileNotFoundError, AudioProcessingError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"Live transcription failed: {exc}") from exc
+        finally:
+            _safe_unlink(tmp_path)
+
+    @app.post(
+        "/use-cases/meeting-minutes",
+        response_model=MeetingMinutesResponse,
+        tags=["use-cases"],
+        summary="Use case: Meeting minutes (transcribe + local summary)",
+        description=(
+            "Upload a meeting recording and get:\n"
+            "1) transcript\n"
+            "2) simple Markdown meeting minutes (heuristic, local-only)."
+        ),
+    )
+    async def use_case_meeting_minutes(
+        file: UploadFile = File(..., description="Meeting audio file."),
+        recognizer: RecognizerName = Query(
+            "whisper",
+            description="Recognizer backend to use.",
+        ),
+        max_sentences: int = Query(
+            6,
+            ge=1,
+            le=20,
+            description="Number of key sentences to include in minutes.",
+        ),
+    ) -> MeetingMinutesResponse:
+        """
+        Create meeting minutes from an uploaded meeting recording.
+
+        Parameters
+        ----------
+        file:
+            Uploaded meeting audio file.
+        recognizer:
+            Recognizer backend identifier.
+        max_sentences:
+            Number of key sentences in the minutes.
+
+        Returns
+        -------
+        MeetingMinutesResponse
+            Transcript and Markdown minutes.
+
+        Raises
+        ------
+        HTTPException
+            If upload is invalid or processing fails.
         """
         tmp_path = await _save_upload_to_temp(file)
         try:
@@ -206,12 +322,12 @@ def _get_recognizer_cached(name: RecognizerName) -> SpeechRecognizer:
     """
     Create and cache recognizer instances.
 
-    Caching matters for Whisper/SpeechBrain because loading models can be slow.
+    Caching avoids repeated heavy model loads (important for Whisper/SpeechBrain).
 
     Parameters
     ----------
     name:
-        Recognizer backend name.
+        Recognizer backend identifier.
 
     Returns
     -------
@@ -221,9 +337,9 @@ def _get_recognizer_cached(name: RecognizerName) -> SpeechRecognizer:
     Raises
     ------
     BackendNotAvailableError
-        If required dependency for that backend is not installed.
+        If dependency for the backend is missing.
     RuntimeError
-        If backend initialization fails.
+        If initialization fails.
     """
     return create_recognizer(name)
 
@@ -235,17 +351,17 @@ async def _save_upload_to_temp(file: UploadFile) -> Path:
     Parameters
     ----------
     file:
-        FastAPI uploaded file.
+        Uploaded file.
 
     Returns
     -------
     pathlib.Path
-        Path to the saved file.
+        Path to the saved temporary file.
 
     Raises
     ------
     HTTPException
-        If the upload has no filename or cannot be written.
+        If the upload is empty or cannot be written.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="Uploaded file has no filename.")
@@ -263,12 +379,12 @@ async def _save_upload_to_temp(file: UploadFile) -> Path:
 
 def _safe_unlink(path: Path) -> None:
     """
-    Best-effort deletion of a file.
+    Best-effort deletion of a temporary file.
 
     Parameters
     ----------
     path:
-        File path to delete.
+        Path to delete.
     """
     try:
         path.unlink(missing_ok=True)
