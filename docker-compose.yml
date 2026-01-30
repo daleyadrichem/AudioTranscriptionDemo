@@ -1,0 +1,7 @@
+services:
+  app:
+    build: .
+    container_name: audio_transcription_demo
+    ports:
+      - "8000:8000"
+    restart: unless-stopped

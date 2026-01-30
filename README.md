@@ -1,5 +1,4 @@
-````markdown
-# audio_transcription_demo
+# Audio Transcription Demo
 
 A modular, workshop-friendly speech-to-text (STT) demo application with clean architecture and fully local backends.
 
@@ -291,4 +290,4 @@ Typical pattern:
 
 ## License
 
-Specify your preferred license in `pyproject.toml` (MIT is a common default).
+MIT
