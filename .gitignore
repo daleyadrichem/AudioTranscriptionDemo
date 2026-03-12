@@ -209,3 +209,6 @@ __marimo__/
 # Video and audio files
 *.mp3
 *.mp4
+
+# Models
+models/

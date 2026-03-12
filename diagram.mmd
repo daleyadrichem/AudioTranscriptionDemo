@@ -1,0 +1,96 @@
+classDiagram
+
+class TranscriptChunk {
+    +text: str
+    +is_final: bool = False
+    +start: float | None = None
+    +end: float | None = None
+    +meta: dict = {}
+}
+
+class SpeechRecognizer {
+    <<abstract>>
+    +label: str
+    +transcribe_file(path: str | Path) str
+    +transcribe_stream(stream: BinaryIO, chunk_size: int = 4000) Iterator~TranscriptChunk~
+}
+
+class WhisperRecognizer {
+    +model_name: str = "base"
+    +sample_rate: int = 16000
+    +language: str | None = None
+    +__post_init__() None
+    +label: str
+    +transcribe_file(path: str | Path) str
+    +transcribe_stream(stream: BinaryIO, chunk_size: int = 32000) Iterator~TranscriptChunk~
+    -_transcribe_pcm_bytes(pcm_bytes: bytes) str
+    -_pcm_to_wav_bytes(pcm_bytes: bytes) bytes
+}
+
+class VoskRecognizer {
+    +model_path: str | Path
+    +sample_rate: int = 16000
+    +__post_init__() None
+    +label: str
+    -_new_recognizer()
+    +transcribe_file(path: str | Path) str
+    +transcribe_stream(stream: BinaryIO, chunk_size: int = 4000) Iterator~TranscriptChunk~
+}
+
+class RecognizerFactory {
+    +create(model_key: str, sample_rate: int = 16000, whisper_model: str = "base", whisper_language: str | None = None, vosk_model_path: str | Path | None = None) SpeechRecognizer
+    +list_models() Dict~str, List[str]~
+}
+
+class AudioSource {
+    <<abstract>>
+    +label: str
+    +get_audio(*args, **kwargs) TempPath
+    +transcribe(recognizer: SpeechRecognizer, stream: bool = False, chunk_size: int = 4000, **kwargs) str | Iterator~TranscriptChunk~
+}
+
+class FileAudioSource {
+    +sample_rate: int = 16000
+    +default_path: Path | None = None
+    +label: str
+    +get_audio(source: str | Path | None = None) TempPath
+    +transcribe(recognizer: SpeechRecognizer, source: str | Path | None = None, stream: bool = False, chunk_size: int = 4000) str | Iterator~TranscriptChunk~
+    -_resolve_path(source: str | Path | None) Path
+    -_read_pcm_bytes(wav_path: Path) bytes
+}
+
+class MicrophoneAudioSource {
+    +sample_rate: int = 16000
+    +channels: int = 1
+    +dtype: str = "int16"
+    +block_size: int = 4000
+    +label: str
+    +get_audio()
+    +transcribe(recognizer: SpeechRecognizer, chunk_size: int = 4000) Iterator~TranscriptChunk~
+}
+
+class _MicrophoneStream {
+    -_queue: queue.Queue~bytes~
+    -_stream: sd.RawInputStream
+    +__init__(sample_rate: int, channels: int, dtype: str, block_size: int) None
+    -_callback(indata, frames, time_info, status)
+    +read(size: int = -1) bytes
+    +close() None
+}
+
+class SourceFactory {
+    +create(name: str, sample_rate: int, default_file_path: Path | None = None) AudioSource
+    +list_sources() Dict~str, List[str]~
+}
+
+SpeechRecognizer <|-- WhisperRecognizer
+SpeechRecognizer <|-- VoskRecognizer
+
+AudioSource <|-- FileAudioSource
+AudioSource <|-- MicrophoneAudioSource
+
+MicrophoneAudioSource --> _MicrophoneStream
+RecognizerFactory --> SpeechRecognizer
+SourceFactory --> AudioSource
+SpeechRecognizer --> TranscriptChunk
+AudioSource --> SpeechRecognizer
