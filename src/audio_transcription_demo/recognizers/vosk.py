@@ -1,107 +1,144 @@
 from __future__ import annotations
 
 import json
+import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import BinaryIO, Iterator
 
-import soundfile as sf
-
-from audio_transcription_demo.utils import AudioProcessingError, ConfigurationError, get_env_var
-from audio_transcription_demo.recognizers.base import SpeechRecognizer
+from .recognizer_base import SpeechRecognizer, TranscriptChunk
 
 
-@dataclass
-class VoskSpeechRecognizer(SpeechRecognizer):
+@dataclass(slots=True)
+class VoskRecognizer(SpeechRecognizer):
     """
-    Vosk speech recognizer (fully local).
-
-    Vosk requires a downloaded model directory. Set it via the environment
-    variable `VOSK_MODEL_PATH`.
+    Speech recognition backend using Vosk.
 
     Parameters
     ----------
-    model_path:
-        Optional explicit path to a Vosk model directory. If None, reads
-        from `VOSK_MODEL_PATH`.
-    sample_rate:
-        Sample rate used for microphone recording and expected WAV input.
-
-    Raises
-    ------
-    ConfigurationError
-        If the model path is missing or invalid.
-    ImportError
-        If the `vosk` package is not installed.
+    model_path : str | Path
+        Path to the Vosk model directory.
+    sample_rate : int, default=16000
+        Expected sample rate of the audio input.
     """
 
-    model_path: Optional[Path] = None
+    model_path: str | Path
     sample_rate: int = 16_000
 
     def __post_init__(self) -> None:
-        from vosk import Model  # type: ignore[import-not-found]
+        """Load the Vosk model."""
+        try:
+            from vosk import KaldiRecognizer, Model
+        except ImportError as exc:
+            raise RuntimeError(
+                "vosk is not installed. Install it with: pip install vosk"
+            ) from exc
 
-        if self.model_path is None:
-            self.model_path = Path(get_env_var("VOSK_MODEL_PATH"))
-
-        if not self.model_path.exists():
-            raise ConfigurationError(f"Vosk model not found at: {self.model_path}")
-
+        self._Model = Model
+        self._KaldiRecognizer = KaldiRecognizer
         self._model = Model(str(self.model_path))
 
-    def transcribe_wav(self, wav_path: Path) -> str:
+    @property
+    def label(self) -> str:
+        """Return recognizer label."""
+        return "vosk"
+
+    def _new_recognizer(self):
+        """Create a new Vosk recognizer instance."""
+        recognizer = self._KaldiRecognizer(self._model, self.sample_rate)
+        recognizer.SetWords(True)
+        return recognizer
+
+    def transcribe_file(self, path: str | Path) -> str:
         """
-        Transcribe a WAV file using Vosk.
+        Transcribe a WAV audio file.
 
         Parameters
         ----------
-        wav_path:
-            Path to a WAV file. Must be mono PCM16 at `sample_rate`.
+        path : str | Path
+            Path to the WAV file.
 
         Returns
         -------
         str
-            Transcript text.
+            Transcribed text.
 
         Raises
         ------
-        FileNotFoundError
-            If `wav_path` does not exist.
-        AudioProcessingError
-            If the WAV sample rate does not match `sample_rate`.
-        RuntimeError
-            If Vosk fails during decoding.
+        ValueError
+            If the WAV format does not match Vosk requirements.
         """
-        from vosk import KaldiRecognizer  # type: ignore[import-not-found]
+        path = Path(path)
 
-        if not wav_path.exists():
-            raise FileNotFoundError(f"WAV file not found: {wav_path}")
+        with wave.open(str(path), "rb") as wf:
+            if wf.getnchannels() != 1:
+                raise ValueError("Vosk requires mono WAV input.")
+            if wf.getframerate() != self.sample_rate:
+                raise ValueError("Invalid sample rate.")
+            if wf.getsampwidth() != 2:
+                raise ValueError("Expected 16-bit PCM WAV input.")
 
-        audio, sr = sf.read(wav_path, dtype="int16")
-        if sr != self.sample_rate:
-            raise AudioProcessingError(
-                f"Vosk expects {self.sample_rate} Hz; got {sr} Hz. "
-                "Convert audio before transcribing."
-            )
+            recognizer = self._new_recognizer()
+            parts: list[str] = []
 
-        recognizer = KaldiRecognizer(self._model, self.sample_rate)
-        recognizer.SetWords(True)
+            while True:
+                data = wf.readframes(4000)
+                if not data:
+                    break
 
-        audio_bytes = audio.tobytes()
-        chunk_size = 4000
-        parts: List[str] = []
+                if recognizer.AcceptWaveform(data):
+                    result = json.loads(recognizer.Result())
+                    text = result.get("text", "").strip()
+                    if text:
+                        parts.append(text)
 
-        for i in range(0, len(audio_bytes), chunk_size):
-            chunk = audio_bytes[i : i + chunk_size]
-            if recognizer.AcceptWaveform(chunk):
-                res = json.loads(recognizer.Result())
-                text = res.get("text", "")
-                if text:
-                    parts.append(text)
-
-        final = json.loads(recognizer.FinalResult())
-        text = final.get("text", "")
-        if text:
-            parts.append(text)
+            final_result = json.loads(recognizer.FinalResult())
+            final_text = final_result.get("text", "").strip()
+            if final_text:
+                parts.append(final_text)
 
         return " ".join(parts).strip()
+
+    def transcribe_stream(
+        self,
+        stream: BinaryIO,
+        *,
+        chunk_size: int = 4000,
+    ) -> Iterator[TranscriptChunk]:
+        """
+        Perform streaming transcription.
+
+        Parameters
+        ----------
+        stream : BinaryIO
+            Raw PCM audio stream.
+        chunk_size : int, default=4000
+            Number of bytes read per iteration.
+
+        Yields
+        ------
+        TranscriptChunk
+            Partial or finalized transcription chunks.
+        """
+        recognizer = self._new_recognizer()
+
+        while True:
+            data = stream.read(chunk_size)
+            if not data:
+                break
+
+            if recognizer.AcceptWaveform(data):
+                result = json.loads(recognizer.Result())
+                text = result.get("text", "").strip()
+                if text:
+                    yield TranscriptChunk(text=text, is_final=True)
+            else:
+                partial = json.loads(recognizer.PartialResult())
+                text = partial.get("partial", "").strip()
+                if text:
+                    yield TranscriptChunk(text=text, is_final=False)
+
+        final_result = json.loads(recognizer.FinalResult())
+        final_text = final_result.get("text", "").strip()
+        if final_text:
+            yield TranscriptChunk(text=final_text, is_final=True)

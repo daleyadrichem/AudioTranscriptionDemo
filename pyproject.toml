@@ -23,10 +23,6 @@ whisper = [
   "openai-whisper>=20231117",
   "torch>=2.0",
 ]
-speechbrain = [
-  "speechbrain>=1.0.0",
-  "torch>=2.0",
-]
 api = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",

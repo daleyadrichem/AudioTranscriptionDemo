@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio Transcription Demo</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #111827;
+      color: #f9fafb;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+    }
+
+    h1, h2 {
+      margin-top: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+      color: #d1d5db;
+    }
+
+    input, select, button, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border-radius: 10px;
+      border: 1px solid #4b5563;
+      background: #111827;
+      color: #f9fafb;
+      padding: 10px 12px;
+      font-size: 14px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button.primary {
+      background: #2563eb;
+      border-color: #2563eb;
+    }
+
+    button.danger {
+      background: #dc2626;
+      border-color: #dc2626;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    .actions > button {
+      flex: 1 1 180px;
+    }
+
+    .status {
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #111827;
+      border: 1px solid #374151;
+      min-height: 20px;
+      white-space: pre-wrap;
+    }
+
+    .output {
+      min-height: 220px;
+      resize: vertical;
+      white-space: pre-wrap;
+    }
+
+    .small {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 8px;
+    }
+
+    .row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid #4b5563;
+      font-size: 12px;
+      color: #d1d5db;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Audio Transcription Demo</h1>
+      <p>Record from your laptop microphone in the browser and stream PCM audio to your FastAPI container over WebSocket.</p>
+      <div class="row">
+        <span class="pill">Browser mic capture</span>
+        <span class="pill">16 kHz PCM</span>
+        <span class="pill">WebSocket streaming</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Connection</h2>
+      <div class="grid">
+        <div>
+          <label for="wsUrl">WebSocket URL</label>
+          <input id="wsUrl" type="text" value="ws://localhost:8000/transcriptions/stream" />
+        </div>
+        <div>
+          <label for="recognizer">Recognizer</label>
+          <select id="recognizer">
+            <option value="whisper">whisper</option>
+            <option value="vosk">vosk</option>
+          </select>
+        </div>
+        <div>
+          <label for="sampleRate">Sample rate</label>
+          <input id="sampleRate" type="number" value="16000" min="8000" step="1000" />
+        </div>
+        <div>
+          <label for="chunkSize">Chunk size</label>
+          <input id="chunkSize" type="number" value="4000" min="400" step="400" />
+        </div>
+        <div>
+          <label for="whisperModel">Whisper model</label>
+          <input id="whisperModel" type="text" value="base" />
+        </div>
+        <div>
+          <label for="whisperLanguage">Whisper language</label>
+          <input id="whisperLanguage" type="text" placeholder="optional" />
+        </div>
+        <div>
+          <label for="voskModelPath">Vosk model path</label>
+          <input id="voskModelPath" type="text" placeholder="/app/models/vosk-model-small-en-us-0.15" />
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="startButton" class="primary">Start streaming</button>
+        <button id="stopButton" class="danger" disabled>Stop streaming</button>
+        <button id="clearButton">Clear transcript</button>
+      </div>
+
+      <div class="small">
+        The backend is expected to accept one JSON config message first, then binary PCM chunks, then <code>{"event":"end"}</code>.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Status</h2>
+      <div id="status" class="status">Idle</div>
+    </div>
+
+    <div class="card">
+      <h2>Transcript</h2>
+      <textarea id="transcript" class="output" readonly></textarea>
+    </div>
+  </div>
+
+  <script>
+    class MicrophoneStreamer {
+      /**
+       * Create a browser microphone streamer.
+       *
+       * Parameters
+       * ----------
+       * targetSampleRate : number
+       *     Desired PCM sample rate sent to the backend.
+       * onAudioChunk : (chunk: ArrayBuffer) => void
+       *     Callback invoked for each PCM chunk.
+       */
+      constructor(targetSampleRate, onAudioChunk) {
+        this.targetSampleRate = targetSampleRate;
+        this.onAudioChunk = onAudioChunk;
+        this.audioContext = null;
+        this.mediaStream = null;
+        this.sourceNode = null;
+        this.processorNode = null;
+      }
+
+      /**
+       * Start microphone capture.
+       *
+       * Returns
+       * -------
+       * Promise<void>
+       *     Resolves when capture has started.
+       */
+      async start() {
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false,
+        });
+
+        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
+        this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+        this.processorNode.onaudioprocess = (event) => {
+          const inputData = event.inputBuffer.getChannelData(0);
+          const resampled = this._resampleFloat32(inputData, this.audioContext.sampleRate, this.targetSampleRate);
+          const pcmChunk = this._float32ToInt16Buffer(resampled);
+          if (pcmChunk.byteLength > 0) {
+            this.onAudioChunk(pcmChunk);
+          }
+        };
+
+        this.sourceNode.connect(this.processorNode);
+        this.processorNode.connect(this.audioContext.destination);
+      }
+
+      /**
+       * Stop microphone capture.
+       *
+       * Returns
+       * -------
+       * Promise<void>
+       *     Resolves when capture has stopped.
+       */
+      async stop() {
+        if (this.processorNode) {
+          this.processorNode.disconnect();
+          this.processorNode.onaudioprocess = null;
+          this.processorNode = null;
+        }
+
+        if (this.sourceNode) {
+          this.sourceNode.disconnect();
+          this.sourceNode = null;
+        }
+
+        if (this.mediaStream) {
+          for (const track of this.mediaStream.getTracks()) {
+            track.stop();
+          }
+          this.mediaStream = null;
+        }
+
+        if (this.audioContext) {
+          await this.audioContext.close();
+          this.audioContext = null;
+        }
+      }
+
+      /**
+       * Resample float32 audio to a target sample rate.
+       *
+       * Parameters
+       * ----------
+       * input : Float32Array
+       *     Input PCM samples.
+       * inputSampleRate : number
+       *     Original sample rate.
+       * outputSampleRate : number
+       *     Desired sample rate.
+       *
+       * Returns
+       * -------
+       * Float32Array
+       *     Resampled audio.
+       */
+      _resampleFloat32(input, inputSampleRate, outputSampleRate) {
+        if (inputSampleRate === outputSampleRate) {
+          return input;
+        }
+
+        const ratio = inputSampleRate / outputSampleRate;
+        const outputLength = Math.max(1, Math.round(input.length / ratio));
+        const output = new Float32Array(outputLength);
+
+        for (let i = 0; i < outputLength; i += 1) {
+          const position = i * ratio;
+          const leftIndex = Math.floor(position);
+          const rightIndex = Math.min(leftIndex + 1, input.length - 1);
+          const weight = position - leftIndex;
+          output[i] = input[leftIndex] * (1 - weight) + input[rightIndex] * weight;
+        }
+
+        return output;
+      }
+
+      /**
+       * Convert float32 mono samples to 16-bit PCM little-endian bytes.
+       *
+       * Parameters
+       * ----------
+       * input : Float32Array
+       *     Input mono samples in the range [-1.0, 1.0].
+       *
+       * Returns
+       * -------
+       * ArrayBuffer
+       *     16-bit PCM bytes.
+       */
+      _float32ToInt16Buffer(input) {
+        const buffer = new ArrayBuffer(input.length * 2);
+        const view = new DataView(buffer);
+
+        for (let i = 0; i < input.length; i += 1) {
+          const sample = Math.max(-1, Math.min(1, input[i]));
+          const value = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+          view.setInt16(i * 2, value, true);
+        }
+
+        return buffer;
+      }
+    }
+
+    const elements = {
+      wsUrl: document.getElementById('wsUrl'),
+      recognizer: document.getElementById('recognizer'),
+      sampleRate: document.getElementById('sampleRate'),
+      chunkSize: document.getElementById('chunkSize'),
+      whisperModel: document.getElementById('whisperModel'),
+      whisperLanguage: document.getElementById('whisperLanguage'),
+      voskModelPath: document.getElementById('voskModelPath'),
+      startButton: document.getElementById('startButton'),
+      stopButton: document.getElementById('stopButton'),
+      clearButton: document.getElementById('clearButton'),
+      status: document.getElementById('status'),
+      transcript: document.getElementById('transcript'),
+    };
+
+    let socket = null;
+    let streamer = null;
+    let finalTranscript = '';
+    let partialTranscript = '';
+
+    /**
+     * Update the on-screen status text.
+     *
+     * Parameters
+     * ----------
+     * message : string
+     *     Status text to display.
+     */
+    function setStatus(message) {
+      elements.status.textContent = message;
+    }
+
+    /**
+     * Render the combined final and partial transcript.
+     */
+    function renderTranscript() {
+      const text = [finalTranscript.trim(), partialTranscript.trim()].filter(Boolean).join('\n');
+      elements.transcript.value = text;
+    }
+
+    /**
+     * Build the initial WebSocket config payload.
+     *
+     * Returns
+     * -------
+     * object
+     *     Configuration payload sent to the backend.
+     */
+    function buildConfig() {
+      return {
+        recognizer: elements.recognizer.value,
+        sample_rate: Number(elements.sampleRate.value),
+        chunk_size: Number(elements.chunkSize.value),
+        whisper_model: elements.whisperModel.value || 'base',
+        whisper_language: elements.whisperLanguage.value || null,
+        vosk_model_path: elements.voskModelPath.value || null,
+      };
+    }
+
+    /**
+     * Start microphone streaming.
+     *
+     * Returns
+     * -------
+     * Promise<void>
+     *     Resolves when the session has started.
+     */
+    async function startStreaming() {
+      if (socket) {
+        return;
+      }
+
+      finalTranscript = '';
+      partialTranscript = '';
+      renderTranscript();
+
+      const config = buildConfig();
+      socket = new WebSocket(elements.wsUrl.value);
+      socket.binaryType = 'arraybuffer';
+
+      await new Promise((resolve, reject) => {
+        socket.onopen = () => resolve();
+        socket.onerror = () => reject(new Error('WebSocket connection failed.'));
+      });
+
+      socket.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+
+        if (payload.event === 'transcript') {
+          const chunk = payload.data;
+          if (chunk.is_final) {
+            finalTranscript = [finalTranscript, chunk.text].filter(Boolean).join('\n');
+            partialTranscript = '';
+          } else {
+            partialTranscript = chunk.text;
+          }
+          renderTranscript();
+          return;
+        }
+
+        if (payload.event === 'error') {
+          setStatus(`Error: ${payload.detail}`);
+          return;
+        }
+
+        if (payload.event === 'done') {
+          setStatus('Streaming finished.');
+        }
+      };
+
+      socket.onclose = () => {
+        socket = null;
+        elements.startButton.disabled = false;
+        elements.stopButton.disabled = true;
+      };
+
+      socket.send(JSON.stringify(config));
+
+      streamer = new MicrophoneStreamer(config.sample_rate, (chunk) => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(chunk);
+        }
+      });
+
+      await streamer.start();
+
+      elements.startButton.disabled = true;
+      elements.stopButton.disabled = false;
+      setStatus('Streaming microphone audio...');
+    }
+
+    /**
+     * Stop microphone streaming.
+     *
+     * Returns
+     * -------
+     * Promise<void>
+     *     Resolves when the session has stopped.
+     */
+    async function stopStreaming() {
+      if (streamer) {
+        await streamer.stop();
+        streamer = null;
+      }
+
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ event: 'end' }));
+      }
+
+      setStatus('Stopping stream...');
+    }
+
+    elements.startButton.addEventListener('click', async () => {
+      try {
+        await startStreaming();
+      } catch (error) {
+        setStatus(`Failed to start: ${error.message}`);
+        if (streamer) {
+          await streamer.stop();
+          streamer = null;
+        }
+        if (socket) {
+          socket.close();
+          socket = null;
+        }
+      }
+    });
+
+    elements.stopButton.addEventListener('click', async () => {
+      try {
+        await stopStreaming();
+      } catch (error) {
+        setStatus(`Failed to stop: ${error.message}`);
+      }
+    });
+
+    elements.clearButton.addEventListener('click', () => {
+      finalTranscript = '';
+      partialTranscript = '';
+      renderTranscript();
+      setStatus('Transcript cleared.');
+    });
+  </script>
+</body>
+</html>

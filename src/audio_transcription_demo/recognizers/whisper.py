@@ -1,93 +1,141 @@
 from __future__ import annotations
 
+import io
+import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from tempfile import NamedTemporaryFile
+from typing import BinaryIO, Iterator
 
-from audio_transcription_demo.recognizers.base import SpeechRecognizer
+from .recognizer_base import SpeechRecognizer, TranscriptChunk
 
 
-@dataclass
-class WhisperSpeechRecognizer(SpeechRecognizer):
+@dataclass(slots=True)
+class WhisperRecognizer(SpeechRecognizer):
     """
-    Whisper speech recognizer (local, heavier).
-
-    This implementation uses `openai-whisper` (imported as `whisper`).
-    Whisper can transcribe many formats directly and manages resampling
-    internally.
+    Speech recognition backend using OpenAI Whisper.
 
     Parameters
     ----------
-    model_name:
-        Whisper model name (e.g., "tiny", "base", "small", "medium", "large").
-    device:
-        Optional device spec passed to whisper (e.g., "cpu", "cuda").
-    sample_rate:
-        Preferred microphone sample rate (recording). Whisper can resample.
-
-    Raises
-    ------
-    ImportError
-        If `openai-whisper` is not installed.
-    RuntimeError
-        If model loading fails.
+    model_name : str, default="base"
+        Whisper model size.
+    sample_rate : int, default=16000
+        Expected audio sample rate.
+    language : str | None, default=None
+        Optional language override.
     """
 
     model_name: str = "base"
-    device: Optional[str] = None
     sample_rate: int = 16_000
+    language: str | None = None
 
     def __post_init__(self) -> None:
-        import whisper  # type: ignore[import-not-found]
+        """Load Whisper model."""
+        try:
+            import whisper
+        except ImportError as exc:
+            raise RuntimeError(
+                "openai-whisper is not installed. Install with: pip install openai-whisper"
+            ) from exc
 
-        self._model = whisper.load_model(self.model_name, device=self.device)
+        self._whisper = whisper
+        self._model = whisper.load_model(self.model_name)
 
-    def transcribe_wav(self, wav_path: Path) -> str:
+    @property
+    def label(self) -> str:
+        """Return recognizer label."""
+        return "whisper"
+
+    def transcribe_file(self, path: str | Path) -> str:
         """
-        Transcribe audio with Whisper.
+        Transcribe an audio file using Whisper.
 
         Parameters
         ----------
-        wav_path:
-            Path to an audio file (WAV or other supported format).
+        path : str | Path
+            Path to the audio file.
 
         Returns
         -------
         str
-            Transcript text.
-
-        Raises
-        ------
-        FileNotFoundError
-            If `wav_path` does not exist.
-        RuntimeError
-            If Whisper transcription fails.
+            Transcription result.
         """
-        if not wav_path.exists():
-            raise FileNotFoundError(f"Audio file not found: {wav_path}")
+        result = self._model.transcribe(
+            str(path),
+            language=self.language,
+            fp16=False,
+        )
+        return result.get("text", "").strip()
 
-        result = self._model.transcribe(str(wav_path))
-        return str(result.get("text", "")).strip()
-
-    def transcribe_any(self, audio_path: Path) -> str:
+    def transcribe_stream(
+        self,
+        stream: BinaryIO,
+        *,
+        chunk_size: int = 32000,
+    ) -> Iterator[TranscriptChunk]:
         """
-        Transcribe arbitrary audio formats supported by Whisper.
+        Perform pseudo-streaming transcription.
+
+        Whisper does not support true streaming, so audio is
+        buffered and transcribed periodically.
 
         Parameters
         ----------
-        audio_path:
-            Path to an audio file.
+        stream : BinaryIO
+            PCM audio stream.
+        chunk_size : int, default=32000
+            Number of bytes read per iteration.
 
-        Returns
-        -------
-        str
-            Transcript text.
-
-        Raises
+        Yields
         ------
-        FileNotFoundError
-            If `audio_path` does not exist.
-        RuntimeError
-            If Whisper transcription fails.
+        TranscriptChunk
+            Incremental transcription output.
         """
-        return self.transcribe_wav(audio_path)
+        pcm_buffer = bytearray()
+        emitted_text = ""
+
+        while True:
+            data = stream.read(chunk_size)
+            if not data:
+                break
+
+            pcm_buffer.extend(data)
+
+            if len(pcm_buffer) < self.sample_rate * 2 * 2:
+                continue
+
+            text = self._transcribe_pcm_bytes(bytes(pcm_buffer)).strip()
+
+            if text and text != emitted_text:
+                emitted_text = text
+                yield TranscriptChunk(text=text, is_final=False)
+
+        final_text = self._transcribe_pcm_bytes(bytes(pcm_buffer)).strip()
+        if final_text:
+            yield TranscriptChunk(text=final_text, is_final=True)
+
+    def _transcribe_pcm_bytes(self, pcm_bytes: bytes) -> str:
+        """Convert PCM buffer to WAV and run Whisper."""
+        wav_bytes = self._pcm_to_wav_bytes(pcm_bytes)
+
+        with NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+            tmp.write(wav_bytes)
+            tmp.flush()
+
+            result = self._model.transcribe(
+                tmp.name,
+                language=self.language,
+                fp16=False,
+            )
+
+        return result.get("text", "")
+
+    def _pcm_to_wav_bytes(self, pcm_bytes: bytes) -> bytes:
+        """Convert raw PCM audio to WAV format."""
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(pcm_bytes)
+        return buffer.getvalue()
